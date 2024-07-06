@@ -1,1 +1,1 @@
-# Supritha-K-C
+# Information Management System For A Blood Bank
