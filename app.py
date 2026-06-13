@@ -236,32 +236,50 @@ def notifications():
     #close connection
     cur.close()
 
-@app.route('/notifications/accept')
+@app.route('/notifications/accept/<string:id>')
 @is_logged_in
-def accept():
-    # cur = mysql.connection.cursor()
-    # cur.execute("SELECT N_PACKETS FROM NOTIFICATIONS")
-    # packets = cur.fetchone()
-    # packet = (x[0] for x in packets)
-    # cur.execute("SELECT NB_GROUP FROM NOTIFICATIONS")
-    # groups = cur.fetchone()
-    # group = (y[0] for y in groups)
-    #
-    # # for row in allnotifications:
-    # #      group = row[1]
-    # #      packet = row[2]
-    # cur.execute("UPDATE BLOODBANK SET TOTAL_PACKETS = TOTAL_PACKETS-%s WHERE B_GROUP = %s",(packet[-1],group[-1]))
-    # result = "ACCEPTED"
-    # cur.execute("INSERT INTO NOTIFICATIONS(RESULT) VALUES(%s)",(result))
-    flash('Request Accepted','success')
+def accept(id):
+    cur = mysql.connection.cursor()
+
+    # Fetch the specific notification by ID
+    cur.execute("SELECT NB_GROUP, N_PACKETS FROM NOTIFICATIONS WHERE id = %s", [id])
+    notification = cur.fetchone()
+
+    if notification:
+        group = notification['NB_GROUP']
+        packets = notification['N_PACKETS']
+
+        # Deduct packets from blood bank inventory
+        cur.execute(
+            "UPDATE BLOODBANK SET TOTAL_PACKETS = TOTAL_PACKETS - %s WHERE B_GROUP = %s",
+            (packets, group)
+        )
+
+        # Remove the notification after accepting
+        cur.execute("DELETE FROM NOTIFICATIONS WHERE id = %s", [id])
+
+        mysql.connection.commit()
+        cur.close()
+
+        flash('Request Accepted and inventory updated', 'success')
+    else:
+        flash('Notification not found', 'danger')
+
     return redirect(url_for('notifications'))
 
-@app.route('/notifications/decline')
+@app.route('/notifications/decline/<string:id>')
 @is_logged_in
-def decline():
-    msg = 'Request Declined'
-    flash(msg,'danger')
+def decline(id):
+    cur = mysql.connection.cursor()
+    cur.execute("DELETE FROM NOTIFICATIONS WHERE id = %s", [id])
+    mysql.connection.commit()
+    cur.close()
+
+    flash('Request Declined', 'danger')
     return redirect(url_for('notifications'))
 
 if __name__ == '__main__':
     app.run(debug=True)
+
+<a href="/notifications/accept/{{ request['id'] }}">Accept</a>
+<a href="/notifications/decline/{{ request['id'] }}">Decline</a>
