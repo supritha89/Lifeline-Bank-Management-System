@@ -1,0 +1,239 @@
+from flask import Flask, render_template, flash, redirect, request, url_for, session, logging
+from flask_mysqldb import MySQL
+from wtforms import Form, StringField, TextAreaField, PasswordField, validators, SelectField
+from passlib.hash import sha256_crypt
+import random
+from functools import wraps
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY')
+
+# Config MySQL
+app.config['MYSQL_HOST'] = os.environ.get('MYSQL_HOST')
+app.config['MYSQL_USER'] = os.environ.get('MYSQL_USER')
+app.config['MYSQL_PASSWORD'] = os.environ.get('MYSQL_PASSWORD')
+app.config['MYSQL_DB'] = os.environ.get('MYSQL_DB')
+app.config['MYSQL_CURSORCLASS'] = 'DictCursor'
+
+# init MySQL
+mysql = MySQL(app)
+
+@app.route('/')
+def index():
+    return render_template('home.html')
+
+@app.route('/contact', methods=['GET','POST'])
+def contact():
+    if request.method == 'POST':
+        bgroup = request.form["bgroup"]
+        bpackets = request.form["bpackets"]
+        fname = request.form["fname"]
+        adress = request.form["adress"]
+
+        cur = mysql.connection.cursor()
+        cur.execute("INSERT INTO CONTACT(B_GROUP,C_PACKETS,F_NAME,ADRESS) VALUES(%s, %s, %s, %s)",(bgroup, bpackets, fname, adress))
+        cur.execute("INSERT INTO NOTIFICATIONS(NB_GROUP,N_PACKETS,NF_NAME,NADRESS) VALUES(%s, %s, %s, %s)",(bgroup, bpackets, fname, adress))
+        mysql.connection.commit()
+        cur.close()
+
+        flash('Your request is successfully sent to the Blood Bank','success')
+        return redirect(url_for('index'))
+    return render_template('contact.html')
+
+class RegisterForm(Form):
+    name = StringField('Name', [validators.DataRequired(),validators.Length(min=1,max=25)])
+    email = StringField('Email',[validators.DataRequired(),validators.Length(min=10,max=50)])
+    password = PasswordField('Password', [
+        validators.DataRequired(),
+        validators.EqualTo('confirm',message='Password do not match')
+    ])
+    confirm = PasswordField('Confirm Password')
+
+@app.route('/register', methods=['GET','POST'])
+def register():
+    form = RegisterForm(request.form)
+    if request.method == 'POST' and form.validate():
+        name = form.name.data
+        email = form.email.data
+        password = sha256_crypt.encrypt(str(form.password.data))
+        e_id = name+str(random.randint(1111,9999))
+
+        cur = mysql.connection.cursor()
+        cur.execute("INSERT INTO RECEPTION(E_ID,NAME,EMAIL,PASSWORD) VALUES(%s, %s, %s, %s)",(e_id, name, email, password))
+        mysql.connection.commit()
+        cur.close()
+
+        flashing_message = "Success! You can log in with Employee ID " + str(e_id)
+        flash(flashing_message,"success")
+        return redirect(url_for('login'))
+    return render_template('register.html',form=form)
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        e_id = request.form["e_id"]
+        password_candidate = request.form["password"]
+
+        cur = mysql.connection.cursor()
+        result = cur.execute("SELECT * FROM RECEPTION WHERE E_ID = %s", [e_id])
+
+        if result > 0:
+            data = cur.fetchone()
+            password = data['PASSWORD']
+            cur.close()
+
+            if sha256_crypt.verify(password_candidate, password):
+                session['logged_in'] = True
+                session['e_id'] = e_id
+                flash('You are now logged in', 'success')
+                return redirect(url_for('dashboard'))
+            else:
+                error = 'Invalid login'
+                return render_template('login.html', error=error)
+        else:
+            cur.close()
+            error = 'Employee ID not found'
+            return render_template('login.html', error=error)
+
+    return render_template('login.html')
+
+def is_logged_in(f):
+    @wraps(f)
+    def wrap(*args, **kwargs):
+        if 'logged_in' in session:
+            return f(*args, **kwargs)
+        else:
+            flash('Unauthorized, Please login!', 'danger')
+            return redirect(url_for('login'))
+    return wrap
+
+@app.route('/logout')
+@is_logged_in
+def logout():
+    session.clear()
+    flash('You are now logged out', 'success')
+    return redirect(url_for('index'))
+
+@app.route('/dashboard')
+@is_logged_in
+def dashboard():
+    cur = mysql.connection.cursor()
+    cur.callproc('BLOOD_DATA')
+    details = cur.fetchall()
+    cur.close()
+    if details:
+        return render_template('dashboard.html', details=details)
+    else:
+        msg = 'Blood Bank is Empty'
+        return render_template('dashboard.html', msg=msg)
+
+@app.route('/donate', methods=['GET', 'POST'])
+@is_logged_in
+def donate():
+    if request.method == 'POST':
+        dname = request.form["dname"]
+        sex = request.form["sex"]
+        age = request.form["age"]
+        weight = request.form["weight"]
+        address = request.form["address"]
+        disease = request.form["disease"]
+        demail = request.form["demail"]
+
+        cur = mysql.connection.cursor()
+        cur.execute("INSERT INTO DONOR(DNAME,SEX,AGE,WEIGHT,ADDRESS,DISEASE,DEMAIL) VALUES(%s, %s, %s, %s, %s, %s, %s)",(dname, sex, age, weight, address, disease, demail))
+        mysql.connection.commit()
+        cur.close()
+
+        flash('Success! Donor details Added.','success')
+        return redirect(url_for('donorlogs'))
+    return render_template('donate.html')
+
+@app.route('/donorlogs')
+@is_logged_in
+def donorlogs():
+    cur = mysql.connection.cursor()
+    result = cur.execute("SELECT * FROM DONOR")
+    logs = cur.fetchall()
+    cur.close()
+    if result > 0:
+        return render_template('donorlogs.html', logs=logs)
+    else:
+        msg = 'No logs found'
+        return render_template('donorlogs.html', msg=msg)
+
+@app.route('/bloodform', methods=['GET','POST'])
+@is_logged_in
+def bloodform():
+    if request.method == 'POST':
+        d_id = request.form["d_id"]
+        blood_group = request.form["blood_group"]
+        packets = request.form["packets"]
+
+        cur = mysql.connection.cursor()
+        cur.execute("INSERT INTO BLOOD(D_ID,B_GROUP,PACKETS) VALUES(%s, %s, %s)",(d_id, blood_group, packets))
+        cur.execute("UPDATE BLOODBANK SET TOTAL_PACKETS = TOTAL_PACKETS+%s WHERE B_GROUP = %s",(packets, blood_group))
+        mysql.connection.commit()
+        cur.close()
+
+        flash('Success! Donor Blood details Added.','success')
+        return redirect(url_for('dashboard'))
+    return render_template('bloodform.html')
+
+@app.route('/notifications')
+@is_logged_in
+def notifications():
+    cur = mysql.connection.cursor()
+    result = cur.execute("SELECT * FROM NOTIFICATIONS")
+    requests = cur.fetchall()
+    cur.close()
+    if result > 0:
+        return render_template('notification.html', requests=requests)
+    else:
+        msg = 'No requests found'
+        return render_template('notification.html', msg=msg)
+
+@app.route('/notifications/accept/<int:id>')
+@is_logged_in
+def accept(id):
+    cur = mysql.connection.cursor()
+    cur.execute("SELECT NB_GROUP, N_PACKETS FROM NOTIFICATIONS WHERE N_ID = %s", [id])
+    notification = cur.fetchone()
+
+    if notification:
+        group = notification['NB_GROUP']
+        packets = notification['N_PACKETS']
+
+        cur.execute("SELECT TOTAL_PACKETS FROM BLOODBANK WHERE B_GROUP = %s", [group])
+        stock = cur.fetchone()
+
+        if stock and stock['TOTAL_PACKETS'] >= int(packets):
+            cur.execute("UPDATE BLOODBANK SET TOTAL_PACKETS = TOTAL_PACKETS - %s WHERE B_GROUP = %s", (packets, group))
+            cur.execute("DELETE FROM NOTIFICATIONS WHERE N_ID = %s", [id])
+            mysql.connection.commit()
+            cur.close()
+            flash('Request Accepted and inventory updated', 'success')
+        else:
+            cur.close()
+            flash('Not enough stock to fulfill this request', 'danger')
+    else:
+        cur.close()
+        flash('Notification not found', 'danger')
+
+    return redirect(url_for('notifications'))
+
+@app.route('/notifications/decline/<int:id>')
+@is_logged_in
+def decline(id):
+    cur = mysql.connection.cursor()
+    cur.execute("DELETE FROM NOTIFICATIONS WHERE N_ID = %s", [id])
+    mysql.connection.commit()
+    cur.close()
+    flash('Request Declined', 'danger')
+    return redirect(url_for('notifications'))
+
+if __name__ == '__main__':
+    app.run(debug=True)
